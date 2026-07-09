@@ -1,26 +1,26 @@
 [
   { 
-    "key": "NOVA-TRIAL-60", 
+    "key": "CINE-TRIAL-20", 
     "active": true,
-    "durationHours": 60
+    "durationHours": 20
   },
   { 
-    "key": "NOVA-TRIAL-10H", 
+    "key": "CINE-TRIAL-10H", 
     "active": true,
     "durationHours": 10 
   },
   { 
-    "key": "NOVA-TRIAL-48H", 
+    "key": "CINE-TRIAL-48H", 
     "active": true,
     "durationHours": 48 
   },
   { 
-    "key": "NOVA-TRIAL-15H", 
+    "key": "CINE-TRIAL-15H", 
     "active": true,
     "durationHours": 15 
   },
   { 
-    "key": "NOVA-TRIAL-72H", 
+    "key": "CINE-TRIAL-72H", 
     "active": true,
     "durationHours": 72 
   }
