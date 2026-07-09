@@ -146,7 +146,7 @@ def get_download_options(detail_url, mode=None):
     except Exception as e:
         return {'error': str(e)}
 
-# ---------- 3. Resolve shortlink ----------
+# ---------- 3. Resolve shortlink (fixed) ----------
 @lru_cache(maxsize=50)
 def resolve_shortlink_cached(short_url):
     return resolve_shortlink(short_url)
@@ -156,12 +156,38 @@ def resolve_shortlink(short_url):
         resp = session.get(short_url, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
-        btn = soup.select_one('a#download, button:has-text("Generate"), a:has-text("Generate")')
-        if not btn:
-            return extract_final_links(resp.text)
-        generate_url = btn.get('href')
+
+        # 1. Try to find #download link directly
+        btn = soup.select_one('a#download')
+        if btn and btn.get('href'):
+            generate_url = btn.get('href')
+        else:
+            # 2. Search all <a> and <button> for text containing "Generate"
+            generate_url = None
+            for elem in soup.find_all(['a', 'button']):
+                text = elem.get_text(strip=True)
+                if 'Generate' in text or 'generate' in text:
+                    if elem.name == 'a' and elem.get('href'):
+                        generate_url = elem.get('href')
+                        break
+                    elif elem.name == 'button' and elem.get('onclick'):
+                        # Sometimes button triggers JS, try to extract URL from onclick
+                        onclick = elem.get('onclick', '')
+                        match = re.search(r"location\.href\s*=\s*'([^']*)'", onclick)
+                        if match:
+                            generate_url = match.group(1)
+                            break
+            # If still nothing, try to find any link with "generate" in the URL or text
+            if not generate_url:
+                for a in soup.find_all('a'):
+                    if 'generate' in a.get('href', '').lower() or 'generate' in a.get_text(strip=True).lower():
+                        generate_url = a.get('href')
+                        break
+
         if not generate_url:
+            # No generate button – try to extract links directly
             return extract_final_links(resp.text)
+
         full_url = urljoin(short_url, generate_url)
         resp2 = session.get(full_url, timeout=10)
         resp2.raise_for_status()
