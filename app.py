@@ -4,7 +4,7 @@ from flask_cors import CORS
 import cinecrawler_optimized as crawler
 
 app = Flask(__name__)
-CORS(app)  # Allows requests from your Android app
+CORS(app)
 
 @app.route('/search', methods=['POST'])
 def search():
@@ -19,7 +19,7 @@ def search():
 def downloads():
     data = request.get_json()
     url = data.get('url')
-    mode = data.get('mode')  # 'complete' or 'episodes' or None
+    mode = data.get('mode')
     if not url:
         return jsonify({'error': 'Missing url'}), 400
     options = crawler.get_download_options(url, mode)
