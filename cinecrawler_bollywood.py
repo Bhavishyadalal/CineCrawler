@@ -1,28 +1,45 @@
 # cinecrawler_bollywood.py
-# Uses curl_cffi to impersonate Chrome and bypass Cloudflare
+# Cloudscraper with multiple domain fallback
 
 import re
 import time
+import cloudscraper
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin, urlparse
 from functools import lru_cache
 
-try:
-    from curl_cffi import requests
-    USE_CURL_CFFI = True
-except ImportError:
-    import requests
-    USE_CURL_CFFI = False
-    print("⚠️ curl_cffi not installed, falling back to standard requests (will fail)")
+# ---------- Cloudscraper session ----------
+def get_scraper():
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'mobile': False
+        },
+        captcha={'provider': 'none'}
+    )
+    scraper.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Referer': 'https://www.google.com/'
+    })
+    return scraper
 
-# ---------- Domain list ----------
+# ---------- Domain list (including newer ones) ----------
 ROGMOVIES_DOMAINS = [
     "rogmovies.rest", "rogmovies.one", "rogmovies.work",
     "rogmovies.life", "rogmovies.gay", "rogmovies.how",
     "rogmovies.click", "rogmovies.nu", "rogmovies.top",
     "rogmovies.fun", "rogmovies.online", "rogmovies.pro",
     "rogmovies.vip", "rogmovies.biz", "rogmovies.xyz",
-    "rogmovies.lol"
+    "rogmovies.lol",
+    "rogmovies.live",   # added
+    "rogmovies.pw",     # added
+    "rogmovies.space"   # added
 ]
 
 def is_valid_html(content):
@@ -33,56 +50,34 @@ def is_valid_html(content):
         return True
     if 'cf-chl' in content_lower or 'cf-browser' in content_lower:
         return False
-    return False
-
-def get_session():
-    if USE_CURL_CFFI:
-        # Impersonate Chrome 120 – this mimics the TLS fingerprint[reference:5]
-        session = requests.Session(impersonate="chrome120")
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        })
-        return session
-    else:
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        })
-        return session
+    # Also check for Cloudflare challenge phrase
+    if 'just a moment' in content_lower or 'checking your browser' in content_lower:
+        return False
+    return True
 
 def get_working_domain():
-    session = get_session()
-    # First try vglist.nl
+    scraper = get_scraper()
+    # Try vglist.nl first
     try:
-        resp = session.get("https://vglist.nl/", timeout=10)
+        resp = scraper.get("https://vglist.nl/", timeout=10)
         if resp.status_code == 200:
             match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
             if match:
                 domain = match.group(0).replace('https://', '').replace('http://', '')
-                test = session.get(f"https://{domain}/", timeout=10)
+                test = scraper.get(f"https://{domain}/", timeout=10)
                 if test.status_code == 200 and is_valid_html(test.text):
                     return domain
     except:
         pass
-    # Try all domains
+    # Fallback: try each domain
     for domain in ROGMOVIES_DOMAINS:
         try:
-            test = session.get(f"https://{domain}/", timeout=10)
+            test = scraper.get(f"https://{domain}/", timeout=10)
             if test.status_code == 200 and is_valid_html(test.text):
                 return domain
         except:
             continue
-    return "rogmovies.rest"
+    return None
 
 WORKING_DOMAIN = None
 
@@ -91,6 +86,8 @@ def get_working_domain_cached():
     if WORKING_DOMAIN:
         return WORKING_DOMAIN
     WORKING_DOMAIN = get_working_domain()
+    if not WORKING_DOMAIN:
+        WORKING_DOMAIN = "rogmovies.rest"  # fallback
     return WORKING_DOMAIN
 
 # ---------- Cache ----------
@@ -113,13 +110,18 @@ def search_movies(query):
         return cached
     try:
         domain = get_working_domain_cached()
-        session = get_session()
+        scraper = get_scraper()
         search_url = f"https://{domain}/search.html?q={quote(query)}"
-        resp = session.get(search_url, timeout=15)
+        resp = scraper.get(search_url, timeout=15)
         html = resp.text
 
         if not is_valid_html(html):
-            result = {'error': 'Invalid HTML (Cloudflare)', 'domain': domain}
+            result = {
+                'error': 'Invalid HTML (Cloudflare)',
+                'domain': domain,
+                'search_url': search_url,
+                'html_preview': html[:800]
+            }
             set_cache(cache_key, result)
             return result
 
@@ -176,8 +178,8 @@ def get_download_options(detail_url, mode=None):
         domain = get_working_domain_cached()
         if not detail_url.startswith('http'):
             detail_url = f"https://{domain}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
-        session = get_session()
-        resp = session.get(detail_url, timeout=15)
+        scraper = get_scraper()
+        resp = scraper.get(detail_url, timeout=15)
         html = resp.text
         if not is_valid_html(html):
             return {'error': 'Invalid HTML'}
@@ -229,8 +231,8 @@ def resolve_shortlink_cached(short_url):
 
 def resolve_shortlink(short_url):
     try:
-        session = get_session()
-        resp = session.get(short_url, timeout=10)
+        scraper = get_scraper()
+        resp = scraper.get(short_url, timeout=10)
         html = resp.text
         soup = BeautifulSoup(html, 'lxml')
         vcloud_a = soup.select_one('a[href*="vcloud.zip"]')
@@ -244,7 +246,7 @@ def resolve_shortlink(short_url):
         vcloud_url = vcloud_a['href']
         if not vcloud_url.startswith('http'):
             vcloud_url = urljoin(short_url, vcloud_url)
-        resp2 = session.get(vcloud_url, timeout=10)
+        resp2 = scraper.get(vcloud_url, timeout=10)
         soup2 = BeautifulSoup(resp2.text, 'lxml')
         generate_btn = soup2.select_one('a#download, .btn-download, .generate-btn')
         if generate_btn:
@@ -252,7 +254,7 @@ def resolve_shortlink(short_url):
             if generate_url:
                 if not generate_url.startswith('http'):
                     generate_url = urljoin(vcloud_url, generate_url)
-                resp3 = session.get(generate_url, timeout=10)
+                resp3 = scraper.get(generate_url, timeout=10)
                 final_html = resp3.text
             else:
                 final_html = resp2.text
@@ -263,7 +265,7 @@ def resolve_shortlink(short_url):
                     if gen_url:
                         if not gen_url.startswith('http'):
                             gen_url = urljoin(vcloud_url, gen_url)
-                        resp3 = session.get(gen_url, timeout=10)
+                        resp3 = scraper.get(gen_url, timeout=10)
                         final_html = resp3.text
                         break
             else:
