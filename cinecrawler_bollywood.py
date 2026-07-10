@@ -1,5 +1,5 @@
 # cinecrawler_bollywood.py
-# HTTP scraper for Bollywood (RogMovies) – handles gzip/deflate and Cloudflare
+# HTTP scraper for Bollywood (RogMovies) – with debug output
 
 import requests
 import re
@@ -37,7 +37,6 @@ session.headers.update({
 
 # ---------- Helper: decompress response body ----------
 def get_html_from_response(resp):
-    """Return decoded HTML from response, handling gzip/deflate."""
     content_encoding = resp.headers.get('content-encoding', '')
     raw_data = resp.content
     if 'gzip' in content_encoding or 'deflate' in content_encoding:
@@ -46,12 +45,10 @@ def get_html_from_response(resp):
                 with gzip.GzipFile(fileobj=io.BytesIO(raw_data)) as gz:
                     raw_data = gz.read()
             else:
-                # deflate
                 import zlib
                 raw_data = zlib.decompress(raw_data, -zlib.MAX_WBITS)
-        except Exception as e:
-            pass  # fallback to raw
-    # Try decoding
+        except Exception:
+            pass
     for encoding in ['utf-8', 'latin-1', 'cp1252']:
         try:
             return raw_data.decode(encoding)
@@ -59,7 +56,19 @@ def get_html_from_response(resp):
             continue
     return raw_data.decode('latin-1', errors='replace')
 
-# ---------- 1. Search ----------
+# ---------- Cache ----------
+cache = {}
+CACHE_TTL = 3600
+
+def get_cache(key):
+    if key in cache and time.time() - cache[key]['time'] < CACHE_TTL:
+        return cache[key]['data']
+    return None
+
+def set_cache(key, data):
+    cache[key] = {'data': data, 'time': time.time()}
+
+# ---------- 1. Search (with debug) ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -74,7 +83,7 @@ def search_movies(query):
         soup = BeautifulSoup(html, 'lxml')
         results = []
 
-        # ---- Find all links with href containing "/download-" ----
+        # ---- Look for all <a> with href containing "/download-" ----
         for a in soup.find_all('a', href=True):
             href = a['href']
             if '/download-' not in href:
@@ -96,7 +105,7 @@ def search_movies(query):
                     'detailUrl': full_url
                 })
 
-        # ---- If still no results, try any link that contains query words ----
+        # ---- If no results, try any link that contains query words ----
         if not results:
             for a in soup.find_all('a', href=True):
                 text = a.get_text(strip=True)
@@ -108,7 +117,16 @@ def search_movies(query):
                             'detailUrl': href if href.startswith('http') else urljoin(f"https://{domain}", href)
                         })
 
-        # ---- Deduplicate ----
+        # ---- If still no results, return debug info ----
+        if not results:
+            return {
+                'error': 'No results found',
+                'html_preview': html[:1000],
+                'search_url': search_url,
+                'domain': domain
+            }
+
+        # Deduplicate
         seen = set()
         unique = []
         for r in results:
@@ -119,7 +137,7 @@ def search_movies(query):
         set_cache(cache_key, unique)
         return unique
     except Exception as e:
-        return {'error': str(e)}
+        return {'error': str(e), 'exception_type': type(e).__name__}
 
 # ---------- 2. Download options ----------
 def get_download_options(detail_url, mode=None):
@@ -269,15 +287,3 @@ def extract_final_links(html):
 
 def resolve_wrapper(short_url):
     return resolve_shortlink_cached(short_url)
-
-# ---------- Cache helper ----------
-cache = {}
-CACHE_TTL = 3600
-
-def get_cache(key):
-    if key in cache and time.time() - cache[key]['time'] < CACHE_TTL:
-        return cache[key]['data']
-    return None
-
-def set_cache(key, data):
-    cache[key] = {'data': data, 'time': time.time()}
