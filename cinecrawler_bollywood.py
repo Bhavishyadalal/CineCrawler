@@ -1,18 +1,36 @@
 # cinecrawler_bollywood.py
-# Full scraper using FlareSolverr (with correct URL)
+# Tries cloudscraper with multiple domains – no API key
 
 import re
 import time
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin, urlparse
 from functools import lru_cache
 
-# ---------- FlareSolverr Configuration ----------
-# UPDATED with your actual Render URL
-FLARESOLVERR_URL = "https://flaresolverr-vgm9.onrender.com/v1"
+# ---------- Cloudscraper session ----------
+def get_scraper():
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'mobile': False
+        },
+        captcha={
+            'provider': 'none'
+        }
+    )
+    scraper.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    })
+    return scraper
 
-# ---------- Domain resolver ----------
+# ---------- Domain list ----------
 ROGMOVIES_DOMAINS = [
     "rogmovies.rest", "rogmovies.one", "rogmovies.work",
     "rogmovies.life", "rogmovies.gay", "rogmovies.how",
@@ -32,83 +50,30 @@ def is_valid_html(content):
         return False
     return False
 
-def extract_redirect_from_js(html):
-    patterns = [
-        r'window\.location\s*=\s*["\']([^"\']+)["\']',
-        r'location\.href\s*=\s*["\']([^"\']+)["\']',
-        r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
-        r'window\.location\.replace\s*\(\s*["\']([^"\']+)["\']\s*\)'
-    ]
-    for p in patterns:
-        m = re.search(p, html)
-        if m:
-            return m.group(1)
-    return None
-
-def fetch_via_flaresolverr(url):
-    """Send request through FlareSolverr and return HTML."""
-    payload = {
-        "cmd": "request.get",
-        "url": url,
-        "maxTimeout": 60000
-    }
-    resp = requests.post(FLARESOLVERR_URL, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("status") == "ok":
-        return data.get("solution", {}).get("response", "")
-    else:
-        raise Exception(f"FlareSolverr error: {data}")
-
-def find_working_domain():
-    for domain in ROGMOVIES_DOMAINS:
-        try:
-            url = f"https://{domain}/"
-            html = fetch_via_flaresolverr(url)
-            if is_valid_html(html):
-                if 'Redirecting' in html or 'redirect' in html.lower():
-                    real_url = extract_redirect_from_js(html)
-                    if real_url:
-                        parsed = urlparse(real_url)
-                        if parsed.netloc:
-                            return parsed.netloc
-                else:
-                    return domain
-        except:
-            continue
-    return None
-
-WORKING_DOMAIN = None
-
 def get_working_domain():
-    global WORKING_DOMAIN
-    if WORKING_DOMAIN:
-        return WORKING_DOMAIN
+    scraper = get_scraper()
+    # First try vglist.nl
     try:
-        html = fetch_via_flaresolverr("https://vglist.nl/")
-        match = re.search(r'https?://rogmovies\.[a-z]+', html)
-        if match:
-            domain = match.group(0).replace('https://', '').replace('http://', '')
-            test_html = fetch_via_flaresolverr(f"https://{domain}/")
-            if is_valid_html(test_html):
-                if 'Redirecting' in test_html:
-                    real_url = extract_redirect_from_js(test_html)
-                    if real_url:
-                        parsed = urlparse(real_url)
-                        if parsed.netloc:
-                            WORKING_DOMAIN = parsed.netloc
-                            return WORKING_DOMAIN
-                else:
-                    WORKING_DOMAIN = domain
+        resp = scraper.get("https://vglist.nl/", timeout=10)
+        if resp.status_code == 200:
+            match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
+            if match:
+                domain = match.group(0).replace('https://', '').replace('http://', '')
+                # Verify it works
+                test = scraper.get(f"https://{domain}/", timeout=10)
+                if test.status_code == 200 and is_valid_html(test.text):
                     return domain
     except:
         pass
-    domain = find_working_domain()
-    if domain:
-        WORKING_DOMAIN = domain
-        return domain
-    WORKING_DOMAIN = "rogmovies.rest"
-    return WORKING_DOMAIN
+    # Try all domains
+    for domain in ROGMOVIES_DOMAINS:
+        try:
+            test = scraper.get(f"https://{domain}/", timeout=10)
+            if test.status_code == 200 and is_valid_html(test.text):
+                return domain
+        except:
+            continue
+    return "rogmovies.rest"  # fallback
 
 # ---------- Cache ----------
 cache = {}
@@ -130,11 +95,13 @@ def search_movies(query):
         return cached
     try:
         domain = get_working_domain()
+        scraper = get_scraper()
         search_url = f"https://{domain}/search.html?q={quote(query)}"
-        html = fetch_via_flaresolverr(search_url)
+        resp = scraper.get(search_url, timeout=15)
+        html = resp.text
 
         if not is_valid_html(html):
-            result = {'error': 'Invalid HTML from FlareSolverr', 'domain': domain}
+            result = {'error': 'Invalid HTML (Cloudflare)', 'domain': domain}
             set_cache(cache_key, result)
             return result
 
@@ -191,14 +158,13 @@ def get_download_options(detail_url, mode=None):
         domain = get_working_domain()
         if not detail_url.startswith('http'):
             detail_url = f"https://{domain}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
-        html = fetch_via_flaresolverr(detail_url)
-
+        scraper = get_scraper()
+        resp = scraper.get(detail_url, timeout=15)
+        html = resp.text
         if not is_valid_html(html):
-            return {'error': 'Invalid HTML from FlareSolverr'}
-
+            return {'error': 'Invalid HTML'}
         soup = BeautifulSoup(html, 'lxml')
         options = []
-
         for a in soup.select('a[href*="nexdrive"]'):
             p = a.parent
             if not p or p.name != 'p':
@@ -226,7 +192,6 @@ def get_download_options(detail_url, mode=None):
             if not quality:
                 quality = 'Unknown'
             options.append({'quality': quality, 'url': a['href']})
-
         seen_quality = set()
         unique = []
         for opt in options:
@@ -234,7 +199,6 @@ def get_download_options(detail_url, mode=None):
             if q not in seen_quality:
                 seen_quality.add(q)
                 unique.append(opt)
-
         set_cache(cache_key, unique)
         return unique
     except Exception as e:
@@ -247,9 +211,10 @@ def resolve_shortlink_cached(short_url):
 
 def resolve_shortlink(short_url):
     try:
-        html = fetch_via_flaresolverr(short_url)
+        scraper = get_scraper()
+        resp = scraper.get(short_url, timeout=10)
+        html = resp.text
         soup = BeautifulSoup(html, 'lxml')
-
         vcloud_a = soup.select_one('a[href*="vcloud.zip"]')
         if not vcloud_a:
             for a in soup.find_all('a'):
@@ -258,24 +223,21 @@ def resolve_shortlink(short_url):
                     break
         if not vcloud_a:
             return {'error': 'V-Cloud link not found'}
-
         vcloud_url = vcloud_a['href']
         if not vcloud_url.startswith('http'):
             vcloud_url = urljoin(short_url, vcloud_url)
-
-        html2 = fetch_via_flaresolverr(vcloud_url)
-        soup2 = BeautifulSoup(html2, 'lxml')
-
+        resp2 = scraper.get(vcloud_url, timeout=10)
+        soup2 = BeautifulSoup(resp2.text, 'lxml')
         generate_btn = soup2.select_one('a#download, .btn-download, .generate-btn')
         if generate_btn:
             generate_url = generate_btn.get('href')
             if generate_url:
                 if not generate_url.startswith('http'):
                     generate_url = urljoin(vcloud_url, generate_url)
-                html3 = fetch_via_flaresolverr(generate_url)
-                final_html = html3
+                resp3 = scraper.get(generate_url, timeout=10)
+                final_html = resp3.text
             else:
-                final_html = html2
+                final_html = resp2.text
         else:
             for a in soup2.find_all('a'):
                 if 'Generate' in a.get_text(strip=True):
@@ -283,12 +245,11 @@ def resolve_shortlink(short_url):
                     if gen_url:
                         if not gen_url.startswith('http'):
                             gen_url = urljoin(vcloud_url, gen_url)
-                        html3 = fetch_via_flaresolverr(gen_url)
-                        final_html = html3
+                        resp3 = scraper.get(gen_url, timeout=10)
+                        final_html = resp3.text
                         break
             else:
-                final_html = html2
-
+                final_html = resp2.text
         return extract_final_links(final_html)
     except Exception as e:
         return {'error': str(e), 'trace': 'resolve_shortlink'}
