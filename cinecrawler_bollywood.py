@@ -1,5 +1,5 @@
 # cinecrawler_bollywood.py
-# Bollywood scraper with domain testing + fallback
+# Debug version – returns detailed info about domain testing
 
 import requests
 import re
@@ -28,20 +28,22 @@ ROGMOVIES_DOMAINS = [
     "rogmovies.lol",
 ]
 
-# ---------- Helper: test if a domain returns real HTML ----------
+# ---------- Helper: check if HTML is valid ----------
 def is_valid_html(content):
-    """Check if content looks like real HTML (not Cloudflare garbage)."""
-    # Look for common HTML tags
-    if '<html' in content.lower() or '<body' in content.lower() or '<title' in content.lower():
+    """Return True if content looks like real HTML."""
+    content_lower = content.lower()
+    if '<html' in content_lower or '<body' in content_lower or '<title' in content_lower:
         return True
-    # Also check if it starts with DOCTYPE
-    if content.strip().startswith('<!DOCTYPE'):
+    if content_lower.strip().startswith('<!doctype'):
         return True
+    # Check for Cloudflare challenge
+    if 'cf-chl' in content_lower or 'cf-browser' in content_lower:
+        return False
     return False
 
 # ---------- Find working domain ----------
 def find_working_domain():
-    """Try each domain; return the first that returns valid HTML."""
+    """Try all domains; return the first that returns valid HTML."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -56,10 +58,12 @@ def find_working_domain():
             url = f"https://{domain}/"
             resp = session.get(url, timeout=5)
             if resp.status_code == 200 and is_valid_html(resp.text):
-                print(f"✅ Working domain found: {domain}")
+                print(f"✅ Working domain: {domain}")
                 return domain
-        except:
-            continue
+            else:
+                print(f"❌ {domain} – status {resp.status_code}, valid: {is_valid_html(resp.text)}")
+        except Exception as e:
+            print(f"❌ {domain} – error: {e}")
     return None  # no domain worked
 
 # ---------- Get domain (with cache) ----------
@@ -69,27 +73,27 @@ def get_working_domain():
     global WORKING_DOMAIN
     if WORKING_DOMAIN:
         return WORKING_DOMAIN
-    # First try vglist.nl (permanent resolver)
+    # Try vglist.nl first
     try:
         resp = requests.get("https://vglist.nl/", timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         if resp.status_code == 200:
             match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
             if match:
                 domain = match.group(0).replace('https://', '').replace('http://', '')
-                # Verify this domain works
+                # Verify domain works
                 test_resp = requests.get(f"https://{domain}/", timeout=5)
                 if test_resp.status_code == 200 and is_valid_html(test_resp.text):
-                    print(f"✅ Found working domain via vglist.nl: {domain}")
+                    print(f"✅ vglist.nl -> {domain}")
                     WORKING_DOMAIN = domain
                     return domain
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ vglist.nl error: {e}")
     # If vglist fails, test all domains
     domain = find_working_domain()
     if domain:
         WORKING_DOMAIN = domain
         return domain
-    # Ultimate fallback: try the default
+    # Ultimate fallback: rogmovies.rest
     print("⚠️ No working domain found – using rogmovies.rest (may fail)")
     WORKING_DOMAIN = "rogmovies.rest"
     return WORKING_DOMAIN
@@ -119,7 +123,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search ----------
+# ---------- 1. Search (with debug) ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -130,22 +134,22 @@ def search_movies(query):
         session = get_session()
         search_url = f"https://{domain}/search.html?q={quote(query)}"
         resp = session.get(search_url, timeout=15)
-        resp.raise_for_status()
-        html = resp.text
-        # If the response is garbage, try another domain
-        if not is_valid_html(html):
-            # Force refresh of working domain and retry once
-            global WORKING_DOMAIN
-            WORKING_DOMAIN = None
-            domain = get_working_domain()
-            if domain:
-                search_url = f"https://{domain}/search.html?q={quote(query)}"
-                resp = session.get(search_url, timeout=15)
-                resp.raise_for_status()
-                html = resp.text
-            else:
-                return {'error': 'No working domain found'}
-        soup = BeautifulSoup(html, 'lxml')
+        status = resp.status_code
+        html = resp.text[:500]  # first 500 chars for debug
+        # Check if HTML is valid
+        if not is_valid_html(resp.text):
+            # Return debug info
+            result = {
+                'error': 'Invalid HTML (Cloudflare or garbage)',
+                'domain_used': domain,
+                'search_url': search_url,
+                'status_code': status,
+                'html_preview': html,
+                'tip': 'All domains are behind Cloudflare on Render. Use Playwright or upgrade Render plan.'
+            }
+            set_cache(cache_key, result)
+            return result
+        soup = BeautifulSoup(resp.text, 'lxml')
         results = []
 
         for a in soup.find_all('a', href=True):
@@ -169,18 +173,18 @@ def search_movies(query):
                     'detailUrl': full_url
                 })
 
-        # If still no results, try a fallback approach
+        # If still no results, return debug
         if not results:
-            # Try to find any link that contains query words
-            for a in soup.find_all('a', href=True):
-                text = a.get_text(strip=True)
-                if text and any(word.lower() in text.lower() for word in query.split()):
-                    href = a['href']
-                    if '/download-' in href:
-                        results.append({
-                            'title': re.sub(r'\s+', ' ', text),
-                            'detailUrl': href if href.startswith('http') else urljoin(f"https://{domain}", href)
-                        })
+            result = {
+                'error': 'No movie links found',
+                'domain_used': domain,
+                'search_url': search_url,
+                'status_code': status,
+                'html_preview': html,
+                'tip': 'The page loads but no /download- links were found. Check the HTML structure.'
+            }
+            set_cache(cache_key, result)
+            return result
 
         # Deduplicate
         seen = set()
@@ -196,7 +200,7 @@ def search_movies(query):
     except Exception as e:
         return {'error': str(e), 'domain': domain if 'domain' in locals() else 'unknown'}
 
-# ---------- 2. Download options ----------
+# ---------- 2. Download options (unchanged) ----------
 def get_download_options(detail_url, mode=None):
     cache_key = f"bollywood_options_{detail_url}"
     cached = get_cache(cache_key)
@@ -257,7 +261,7 @@ def get_download_options(detail_url, mode=None):
     except Exception as e:
         return {'error': str(e)}
 
-# ---------- 3. Resolve shortlink ----------
+# ---------- 3. Resolve shortlink (unchanged) ----------
 @lru_cache(maxsize=50)
 def resolve_shortlink_cached(short_url):
     return resolve_shortlink(short_url)
