@@ -44,7 +44,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search ----------
+# ---------- 1. Search (FIXED) ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -52,22 +52,48 @@ def search_movies(query):
         return cached
     try:
         domain = get_bollywood_domain()
-        resp = session.get(f"https://{domain}/search.html?q={quote(query)}", timeout=15)
+        url = f"https://{domain}/search.html?q={quote(query)}"
+        resp = session.get(url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
         results = []
-        # Find all links containing /download-
-        for a in soup.select('a[href*="/download-"]'):
+
+        # Method 1: Find all <a> with href containing "/download-"
+        for a in soup.find_all('a', href=re.compile(r'/download-')):
+            href = a.get('href')
+            # Get title from the anchor text or from the parent
             title = a.get_text(strip=True)
             if not title or len(title) < 3:
-                parent = a.find_parent()
+                # Try the parent element
+                parent = a.parent
                 if parent:
                     title = parent.get_text(strip=True)
-            if title and a.get('href'):
+                # If still empty, try the nearest heading
+                if not title or len(title) < 3:
+                    heading = a.find_previous(['h1', 'h2', 'h3', 'h4'])
+                    if heading:
+                        title = heading.get_text(strip=True)
+            if title and href:
                 results.append({
                     'title': re.sub(r'\s+', ' ', title),
-                    'detailUrl': a['href']
+                    'detailUrl': href
                 })
+
+        # Method 2: If no results, look for div.movie-card or .result-item
+        if not results:
+            for card in soup.select('.movie-card, .result-item, .post-item, .grid-item'):
+                # Try to find a link inside
+                link = card.find('a', href=re.compile(r'/download-'))
+                if link:
+                    href = link.get('href')
+                    # Extract title from card text
+                    title = card.get_text(strip=True)
+                    if title:
+                        results.append({
+                            'title': re.sub(r'\s+', ' ', title),
+                            'detailUrl': href
+                        })
+
         # Deduplicate by URL
         seen = set()
         unique = []
@@ -75,6 +101,7 @@ def search_movies(query):
             if r['detailUrl'] not in seen:
                 seen.add(r['detailUrl'])
                 unique.append(r)
+
         set_cache(cache_key, unique)
         return unique
     except Exception as e:
@@ -82,7 +109,6 @@ def search_movies(query):
 
 # ---------- 2. Download options ----------
 def get_download_options(detail_url, mode=None):
-    # mode is ignored for Bollywood (no series mode)
     cache_key = f"bollywood_options_{detail_url}"
     cached = get_cache(cache_key)
     if cached:
@@ -95,22 +121,18 @@ def get_download_options(detail_url, mode=None):
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
         options = []
-        # Find all nexdrive links
         for a in soup.select('a[href*="nexdrive"]'):
-            # Get parent <p>
             p = a.parent
             if not p or p.name != 'p':
                 p = a.find_parent('p')
             if not p:
                 continue
-            # Get previous sibling <h5>
             quality_el = p.find_previous_sibling('h5')
             if not quality_el:
                 quality_el = p.parent.find('h5') if p.parent else None
             quality = ''
             if quality_el:
                 text = quality_el.get_text(strip=True)
-                # Extract resolution and size
                 match = re.search(r'(\d{3,4}p\s*(?:4K)?)\s*(x264|x265|H\.?264|H\.?265)?\s*\[?([\d.]+\s*(?:GB|MB))?\]?', text, re.I)
                 if match:
                     parts = []
@@ -122,7 +144,6 @@ def get_download_options(detail_url, mode=None):
                         parts.append(match.group(3))
                     quality = ' '.join(parts)
                 else:
-                    # fallback: take first 40 chars
                     quality = text[:40]
             if not quality:
                 quality = 'Unknown'
@@ -150,14 +171,11 @@ def resolve_shortlink_cached(short_url):
 
 def resolve_shortlink(short_url):
     try:
-        # Step 1: Get nexdrive page and find vcloud link
         resp = session.get(short_url, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
-        # Look for a[href*="vcloud.zip"] or text "V-Cloud"
         vcloud_a = soup.select_one('a[href*="vcloud.zip"]')
         if not vcloud_a:
-            # fallback: find by text
             for a in soup.find_all('a'):
                 if 'V-Cloud' in a.get_text(strip=True):
                     vcloud_a = a
@@ -166,27 +184,22 @@ def resolve_shortlink(short_url):
             return {'error': 'V-Cloud link not found'}
         vcloud_url = vcloud_a['href']
         if not vcloud_url.startswith('http'):
-            # relative URL
             vcloud_url = urljoin(short_url, vcloud_url)
-        # Step 2: Go to vcloud page
         resp2 = session.get(vcloud_url, timeout=10)
         resp2.raise_for_status()
         soup2 = BeautifulSoup(resp2.text, 'lxml')
-        # Step 3: Find generate button and simulate click (maybe a POST or redirect)
         generate_btn = soup2.select_one('a#download, .btn-download, .generate-btn')
         if generate_btn:
             generate_url = generate_btn.get('href')
             if generate_url:
                 if not generate_url.startswith('http'):
                     generate_url = urljoin(vcloud_url, generate_url)
-                # Follow generate link
                 resp3 = session.get(generate_url, timeout=10)
                 resp3.raise_for_status()
                 final_html = resp3.text
             else:
                 final_html = resp2.text
         else:
-            # Try to find any link with "Generate" text
             for a in soup2.find_all('a'):
                 if 'Generate' in a.get_text(strip=True):
                     gen_url = a.get('href')
@@ -199,7 +212,6 @@ def resolve_shortlink(short_url):
                         break
             else:
                 final_html = resp2.text
-        # Step 4: Extract final download links
         return extract_final_links(final_html)
     except Exception as e:
         return {'error': str(e)}
@@ -213,7 +225,6 @@ def extract_final_links(html):
         if re.search(r'login|signin|telegram|t\.me|tinyurl|tutorial', href, re.I):
             continue
         if 'Download' in text or 'download' in text.lower():
-            # Determine server
             server = 'Unknown'
             if 'FSLv2' in text:
                 server = 'FSLv2'
@@ -229,10 +240,8 @@ def extract_final_links(html):
                 server = 'Server 1'
             elif 'Server' in text:
                 server = 'Direct'
-            # Exclude PixelServer if desired (we can add a flag)
             if server != 'PixelServer':
                 links.append({'server': server, 'label': text, 'url': href})
-    # Deduplicate by URL
     seen = set()
     unique = []
     for link in links:
