@@ -1,5 +1,5 @@
 # cinecrawler_bollywood.py
-# HTTP scraper with fallback domains (no Cloudflare)
+# HTTP scraper for Bollywood – gets domain from vglist.nl
 
 import requests
 import re
@@ -8,43 +8,47 @@ from urllib.parse import quote, urljoin
 from functools import lru_cache
 import time
 
-# ---------- Fallback domains ----------
-ROGMOVIES_DOMAINS = [
-    "rogmovies.rest",
-    "rogmovies.one",
-    "rogmovies.work",
-    "rogmovies.life",
-    "rogmovies.lol",
-    "rogmovies.gay",
-    "rogmovies.how",
-    "rogmovies.net",
-    "rogmovies.site"
-]
-
-def find_working_domain():
-    """Try each domain until one responds with a 200 (not Cloudflare)."""
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-    })
-    for domain in ROGMOVIES_DOMAINS:
+# ---------- Get domain from vglist.nl ----------
+def get_bollywood_domain():
+    """Fetch the current RogMovies domain from vglist.nl."""
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+        resp = session.get("https://vglist.nl/", timeout=10)
+        if resp.status_code == 200:
+            # Find the RogMovies link
+            match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
+            if match:
+                domain = match.group(0).replace('https://', '').replace('http://', '')
+                print(f"✅ Found domain from vglist.nl: {domain}")
+                return domain
+    except Exception as e:
+        print(f"⚠️ Failed to fetch from vglist.nl: {e}")
+    
+    # Fallback domains if vglist.nl fails
+    fallback_domains = [
+        "rogmovies.rest",
+        "rogmovies.one",
+        "rogmovies.work",
+        "rogmovies.life"
+    ]
+    for domain in fallback_domains:
         try:
-            resp = session.get(f"https://{domain}/", timeout=5)
-            if resp.status_code == 200 and '<title>' in resp.text:
-                print(f"✅ Found working domain: {domain}")
+            test_resp = requests.get(f"https://{domain}/", timeout=5)
+            if test_resp.status_code == 200:
+                print(f"✅ Using fallback domain: {domain}")
                 return domain
         except:
             continue
-    return ROGMOVIES_DOMAINS[0]  # fallback
+    
+    print("⚠️ Using default domain: rogmovies.rest")
+    return "rogmovies.rest"
 
-# ---------- Get working domain ----------
-WORKING_DOMAIN = find_working_domain()
-print(f"🌐 Using domain: {WORKING_DOMAIN}")
+# ---------- Initialize domain ----------
+DOMAIN = get_bollywood_domain()
+print(f"🌐 Using domain: {DOMAIN}")
 
 # ---------- Session ----------
 session = requests.Session()
@@ -76,8 +80,7 @@ def search_movies(query):
     if cached:
         return cached
     try:
-        domain = WORKING_DOMAIN
-        search_url = f"https://{domain}/search.html?q={quote(query)}"
+        search_url = f"https://{DOMAIN}/search.html?q={quote(query)}"
         resp = session.get(search_url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
@@ -98,7 +101,7 @@ def search_movies(query):
                         title = heading.get_text(strip=True)
             if title:
                 title = re.sub(r'\s+', ' ', title)
-                full_url = href if href.startswith('http') else urljoin(f"https://{domain}", href)
+                full_url = href if href.startswith('http') else urljoin(f"https://{DOMAIN}", href)
                 results.append({
                     'title': title,
                     'detailUrl': full_url
@@ -113,7 +116,7 @@ def search_movies(query):
                     if '/download-' in href:
                         results.append({
                             'title': re.sub(r'\s+', ' ', text),
-                            'detailUrl': href if href.startswith('http') else urljoin(f"https://{domain}", href)
+                            'detailUrl': href if href.startswith('http') else urljoin(f"https://{DOMAIN}", href)
                         })
 
         # Deduplicate
@@ -137,8 +140,7 @@ def get_download_options(detail_url, mode=None):
         return cached
     try:
         if not detail_url.startswith('http'):
-            domain = WORKING_DOMAIN
-            detail_url = f"https://{domain}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
+            detail_url = f"https://{DOMAIN}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
         resp = session.get(detail_url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
