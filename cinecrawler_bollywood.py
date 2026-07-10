@@ -1,12 +1,11 @@
 # cinecrawler_bollywood.py
-# Debug version – returns detailed info about domain testing
+# Bollywood scraper – handles redirects and Cloudflare
 
 import requests
 import re
 import time
 from bs4 import BeautifulSoup
-from urllib.parse import quote, urljoin
-from functools import lru_cache
+from urllib.parse import quote, urljoin, urlparse
 
 # ---------- List of all known RogMovies domains ----------
 ROGMOVIES_DOMAINS = [
@@ -28,22 +27,35 @@ ROGMOVIES_DOMAINS = [
     "rogmovies.lol",
 ]
 
-# ---------- Helper: check if HTML is valid ----------
+# ---------- Helper: check if content is valid HTML ----------
 def is_valid_html(content):
-    """Return True if content looks like real HTML."""
     content_lower = content.lower()
     if '<html' in content_lower or '<body' in content_lower or '<title' in content_lower:
         return True
     if content_lower.strip().startswith('<!doctype'):
         return True
-    # Check for Cloudflare challenge
     if 'cf-chl' in content_lower or 'cf-browser' in content_lower:
         return False
     return False
 
+# ---------- Helper: extract redirect URL from JavaScript ----------
+def extract_redirect_from_js(html):
+    """Extract redirect URL from JavaScript redirect code."""
+    # Look for window.location or location.href
+    patterns = [
+        r'window\.location\s*=\s*["\']([^"\']+)["\']',
+        r'location\.href\s*=\s*["\']([^"\']+)["\']',
+        r'window\.location\.href\s*=\s*["\']([^"\']+)["\']',
+        r'window\.location\.replace\s*\(\s*["\']([^"\']+)["\']\s*\)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    return None
+
 # ---------- Find working domain ----------
 def find_working_domain():
-    """Try all domains; return the first that returns valid HTML."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -56,15 +68,24 @@ def find_working_domain():
     for domain in ROGMOVIES_DOMAINS:
         try:
             url = f"https://{domain}/"
-            resp = session.get(url, timeout=5)
+            resp = session.get(url, timeout=10, allow_redirects=True)
             if resp.status_code == 200 and is_valid_html(resp.text):
-                print(f"✅ Working domain: {domain}")
-                return domain
-            else:
-                print(f"❌ {domain} – status {resp.status_code}, valid: {is_valid_html(resp.text)}")
+                # Check if it's a redirect page
+                if 'Redirecting' in resp.text or 'redirect' in resp.text.lower():
+                    # Try to extract the real URL
+                    real_url = extract_redirect_from_js(resp.text)
+                    if real_url:
+                        print(f"✅ {domain} redirects to: {real_url}")
+                        # Extract domain from the real URL
+                        parsed = urlparse(real_url)
+                        if parsed.netloc:
+                            return parsed.netloc
+                else:
+                    print(f"✅ Working domain: {domain}")
+                    return domain
         except Exception as e:
             print(f"❌ {domain} – error: {e}")
-    return None  # no domain worked
+    return None
 
 # ---------- Get domain (with cache) ----------
 WORKING_DOMAIN = None
@@ -80,12 +101,20 @@ def get_working_domain():
             match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
             if match:
                 domain = match.group(0).replace('https://', '').replace('http://', '')
-                # Verify domain works
-                test_resp = requests.get(f"https://{domain}/", timeout=5)
+                test_resp = requests.get(f"https://{domain}/", timeout=10, allow_redirects=True)
                 if test_resp.status_code == 200 and is_valid_html(test_resp.text):
-                    print(f"✅ vglist.nl -> {domain}")
-                    WORKING_DOMAIN = domain
-                    return domain
+                    if 'Redirecting' in test_resp.text:
+                        real_url = extract_redirect_from_js(test_resp.text)
+                        if real_url:
+                            parsed = urlparse(real_url)
+                            if parsed.netloc:
+                                WORKING_DOMAIN = parsed.netloc
+                                print(f"✅ vglist.nl -> {WORKING_DOMAIN}")
+                                return WORKING_DOMAIN
+                    else:
+                        WORKING_DOMAIN = domain
+                        print(f"✅ vglist.nl -> {domain}")
+                        return domain
     except Exception as e:
         print(f"⚠️ vglist.nl error: {e}")
     # If vglist fails, test all domains
@@ -93,8 +122,8 @@ def get_working_domain():
     if domain:
         WORKING_DOMAIN = domain
         return domain
-    # Ultimate fallback: rogmovies.rest
-    print("⚠️ No working domain found – using rogmovies.rest (may fail)")
+    # Ultimate fallback
+    print("⚠️ No working domain found – using rogmovies.rest")
     WORKING_DOMAIN = "rogmovies.rest"
     return WORKING_DOMAIN
 
@@ -123,7 +152,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search (with debug) ----------
+# ---------- 1. Search ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -133,23 +162,37 @@ def search_movies(query):
         domain = get_working_domain()
         session = get_session()
         search_url = f"https://{domain}/search.html?q={quote(query)}"
-        resp = session.get(search_url, timeout=15)
+        resp = session.get(search_url, timeout=15, allow_redirects=True)
         status = resp.status_code
-        html = resp.text[:500]  # first 500 chars for debug
+        html = resp.text
+
+        # Check if we got a redirect page
+        if 'Redirecting' in html or '<title>Redirecting...</title>' in html:
+            real_url = extract_redirect_from_js(html)
+            if real_url:
+                # Follow the redirect manually
+                parsed = urlparse(real_url)
+                if parsed.netloc:
+                    domain = parsed.netloc
+                    WORKING_DOMAIN = domain
+                    search_url = f"https://{domain}/search.html?q={quote(query)}"
+                    resp = session.get(search_url, timeout=15, allow_redirects=True)
+                    html = resp.text
+
         # Check if HTML is valid
-        if not is_valid_html(resp.text):
-            # Return debug info
+        if not is_valid_html(html):
             result = {
                 'error': 'Invalid HTML (Cloudflare or garbage)',
                 'domain_used': domain,
                 'search_url': search_url,
                 'status_code': status,
-                'html_preview': html,
-                'tip': 'All domains are behind Cloudflare on Render. Use Playwright or upgrade Render plan.'
+                'html_preview': html[:500],
+                'tip': 'All domains are behind Cloudflare. Use Playwright or upgrade Render plan.'
             }
             set_cache(cache_key, result)
             return result
-        soup = BeautifulSoup(resp.text, 'lxml')
+
+        soup = BeautifulSoup(html, 'lxml')
         results = []
 
         for a in soup.find_all('a', href=True):
@@ -173,15 +216,15 @@ def search_movies(query):
                     'detailUrl': full_url
                 })
 
-        # If still no results, return debug
+        # If no results, return debug
         if not results:
             result = {
                 'error': 'No movie links found',
                 'domain_used': domain,
                 'search_url': search_url,
                 'status_code': status,
-                'html_preview': html,
-                'tip': 'The page loads but no /download- links were found. Check the HTML structure.'
+                'html_preview': html[:500],
+                'tip': 'The page loads but no /download- links were found.'
             }
             set_cache(cache_key, result)
             return result
@@ -200,7 +243,7 @@ def search_movies(query):
     except Exception as e:
         return {'error': str(e), 'domain': domain if 'domain' in locals() else 'unknown'}
 
-# ---------- 2. Download options (unchanged) ----------
+# ---------- 2. Download options ----------
 def get_download_options(detail_url, mode=None):
     cache_key = f"bollywood_options_{detail_url}"
     cached = get_cache(cache_key)
@@ -211,7 +254,7 @@ def get_download_options(detail_url, mode=None):
         if not detail_url.startswith('http'):
             detail_url = f"https://{domain}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
         session = get_session()
-        resp = session.get(detail_url, timeout=15)
+        resp = session.get(detail_url, timeout=15, allow_redirects=True)
         resp.raise_for_status()
         html = resp.text
         if not is_valid_html(html):
@@ -261,7 +304,7 @@ def get_download_options(detail_url, mode=None):
     except Exception as e:
         return {'error': str(e)}
 
-# ---------- 3. Resolve shortlink (unchanged) ----------
+# ---------- 3. Resolve shortlink ----------
 @lru_cache(maxsize=50)
 def resolve_shortlink_cached(short_url):
     return resolve_shortlink(short_url)
@@ -269,7 +312,7 @@ def resolve_shortlink_cached(short_url):
 def resolve_shortlink(short_url):
     try:
         session = get_session()
-        resp = session.get(short_url, timeout=10)
+        resp = session.get(short_url, timeout=10, allow_redirects=True)
         resp.raise_for_status()
         html = resp.text
         soup = BeautifulSoup(html, 'lxml')
@@ -284,7 +327,7 @@ def resolve_shortlink(short_url):
         vcloud_url = vcloud_a['href']
         if not vcloud_url.startswith('http'):
             vcloud_url = urljoin(short_url, vcloud_url)
-        resp2 = session.get(vcloud_url, timeout=10)
+        resp2 = session.get(vcloud_url, timeout=10, allow_redirects=True)
         resp2.raise_for_status()
         soup2 = BeautifulSoup(resp2.text, 'lxml')
         generate_btn = soup2.select_one('a#download, .btn-download, .generate-btn')
@@ -293,7 +336,7 @@ def resolve_shortlink(short_url):
             if generate_url:
                 if not generate_url.startswith('http'):
                     generate_url = urljoin(vcloud_url, generate_url)
-                resp3 = session.get(generate_url, timeout=10)
+                resp3 = session.get(generate_url, timeout=10, allow_redirects=True)
                 resp3.raise_for_status()
                 final_html = resp3.text
             else:
@@ -305,7 +348,7 @@ def resolve_shortlink(short_url):
                     if gen_url:
                         if not gen_url.startswith('http'):
                             gen_url = urljoin(vcloud_url, gen_url)
-                        resp3 = session.get(gen_url, timeout=10)
+                        resp3 = session.get(gen_url, timeout=10, allow_redirects=True)
                         resp3.raise_for_status()
                         final_html = resp3.text
                         break
