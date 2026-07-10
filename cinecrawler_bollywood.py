@@ -1,21 +1,20 @@
 # cinecrawler_bollywood.py
-# HTTP scraper for Bollywood (RogMovies) – with debug output
+# HTTP scraper for Bollywood (RogMovies) – using cloudscraper to bypass Cloudflare
 
-import requests
 import re
-import gzip
-import io
-from bs4 import BeautifulSoup
+import time
 from urllib.parse import quote, urljoin
 from functools import lru_cache
-import time
+import cloudscraper
 
 # ---------- Domain resolver ----------
 DEFAULT_BOLLYWOOD_DOMAIN = "rogmovies.rest"
 
 def get_bollywood_domain():
     try:
-        resp = requests.get("https://vglist.top/", timeout=10)
+        # Use cloudscraper for domain fetch as well
+        scraper = cloudscraper.create_scraper()
+        resp = scraper.get("https://vglist.top/", timeout=10)
         if resp.status_code == 200:
             match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
             if match:
@@ -24,9 +23,15 @@ def get_bollywood_domain():
         pass
     return DEFAULT_BOLLYWOOD_DOMAIN
 
-# ---------- Session ----------
-session = requests.Session()
-session.headers.update({
+# ---------- Session with cloudscraper ----------
+scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'mobile': False
+    }
+)
+scraper.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
@@ -34,27 +39,6 @@ session.headers.update({
     'Connection': 'keep-alive',
     'Upgrade-Insecure-Requests': '1'
 })
-
-# ---------- Helper: decompress response body ----------
-def get_html_from_response(resp):
-    content_encoding = resp.headers.get('content-encoding', '')
-    raw_data = resp.content
-    if 'gzip' in content_encoding or 'deflate' in content_encoding:
-        try:
-            if 'gzip' in content_encoding:
-                with gzip.GzipFile(fileobj=io.BytesIO(raw_data)) as gz:
-                    raw_data = gz.read()
-            else:
-                import zlib
-                raw_data = zlib.decompress(raw_data, -zlib.MAX_WBITS)
-        except Exception:
-            pass
-    for encoding in ['utf-8', 'latin-1', 'cp1252']:
-        try:
-            return raw_data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw_data.decode('latin-1', errors='replace')
 
 # ---------- Cache ----------
 cache = {}
@@ -68,7 +52,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search (with debug) ----------
+# ---------- 1. Search ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -77,13 +61,11 @@ def search_movies(query):
     try:
         domain = get_bollywood_domain()
         search_url = f"https://{domain}/search.html?q={quote(query)}"
-        resp = session.get(search_url, timeout=15)
+        resp = scraper.get(search_url, timeout=15)
         resp.raise_for_status()
-        html = get_html_from_response(resp)
-        soup = BeautifulSoup(html, 'lxml')
+        soup = BeautifulSoup(resp.text, 'lxml')  # using BeautifulSoup now (import needed)
         results = []
 
-        # ---- Look for all <a> with href containing "/download-" ----
         for a in soup.find_all('a', href=True):
             href = a['href']
             if '/download-' not in href:
@@ -105,7 +87,7 @@ def search_movies(query):
                     'detailUrl': full_url
                 })
 
-        # ---- If no results, try any link that contains query words ----
+        # If no results, try any link containing query words
         if not results:
             for a in soup.find_all('a', href=True):
                 text = a.get_text(strip=True)
@@ -116,15 +98,6 @@ def search_movies(query):
                             'title': re.sub(r'\s+', ' ', text),
                             'detailUrl': href if href.startswith('http') else urljoin(f"https://{domain}", href)
                         })
-
-        # ---- If still no results, return debug info ----
-        if not results:
-            return {
-                'error': 'No results found',
-                'html_preview': html[:1000],
-                'search_url': search_url,
-                'domain': domain
-            }
 
         # Deduplicate
         seen = set()
@@ -137,10 +110,11 @@ def search_movies(query):
         set_cache(cache_key, unique)
         return unique
     except Exception as e:
-        return {'error': str(e), 'exception_type': type(e).__name__}
+        return {'error': str(e)}
 
 # ---------- 2. Download options ----------
 def get_download_options(detail_url, mode=None):
+    # mode is ignored for Bollywood
     cache_key = f"bollywood_options_{detail_url}"
     cached = get_cache(cache_key)
     if cached:
@@ -149,10 +123,9 @@ def get_download_options(detail_url, mode=None):
         if not detail_url.startswith('http'):
             domain = get_bollywood_domain()
             detail_url = f"https://{domain}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
-        resp = session.get(detail_url, timeout=15)
+        resp = scraper.get(detail_url, timeout=15)
         resp.raise_for_status()
-        html = get_html_from_response(resp)
-        soup = BeautifulSoup(html, 'lxml')
+        soup = BeautifulSoup(resp.text, 'lxml')
         options = []
         for a in soup.select('a[href*="nexdrive"]'):
             p = a.parent
@@ -204,10 +177,9 @@ def resolve_shortlink_cached(short_url):
 
 def resolve_shortlink(short_url):
     try:
-        resp = session.get(short_url, timeout=10)
+        resp = scraper.get(short_url, timeout=10)
         resp.raise_for_status()
-        html = get_html_from_response(resp)
-        soup = BeautifulSoup(html, 'lxml')
+        soup = BeautifulSoup(resp.text, 'lxml')
         vcloud_a = soup.select_one('a[href*="vcloud.zip"]')
         if not vcloud_a:
             for a in soup.find_all('a'):
@@ -219,21 +191,20 @@ def resolve_shortlink(short_url):
         vcloud_url = vcloud_a['href']
         if not vcloud_url.startswith('http'):
             vcloud_url = urljoin(short_url, vcloud_url)
-        resp2 = session.get(vcloud_url, timeout=10)
+        resp2 = scraper.get(vcloud_url, timeout=10)
         resp2.raise_for_status()
-        html2 = get_html_from_response(resp2)
-        soup2 = BeautifulSoup(html2, 'lxml')
+        soup2 = BeautifulSoup(resp2.text, 'lxml')
         generate_btn = soup2.select_one('a#download, .btn-download, .generate-btn')
         if generate_btn:
             generate_url = generate_btn.get('href')
             if generate_url:
                 if not generate_url.startswith('http'):
                     generate_url = urljoin(vcloud_url, generate_url)
-                resp3 = session.get(generate_url, timeout=10)
+                resp3 = scraper.get(generate_url, timeout=10)
                 resp3.raise_for_status()
-                final_html = get_html_from_response(resp3)
+                final_html = resp3.text
             else:
-                final_html = html2
+                final_html = resp2.text
         else:
             for a in soup2.find_all('a'):
                 if 'Generate' in a.get_text(strip=True):
@@ -241,12 +212,12 @@ def resolve_shortlink(short_url):
                     if gen_url:
                         if not gen_url.startswith('http'):
                             gen_url = urljoin(vcloud_url, gen_url)
-                        resp3 = session.get(gen_url, timeout=10)
+                        resp3 = scraper.get(gen_url, timeout=10)
                         resp3.raise_for_status()
-                        final_html = get_html_from_response(resp3)
+                        final_html = resp3.text
                         break
             else:
-                final_html = html2
+                final_html = resp2.text
         return extract_final_links(final_html)
     except Exception as e:
         return {'error': str(e)}
@@ -287,3 +258,6 @@ def extract_final_links(html):
 
 def resolve_wrapper(short_url):
     return resolve_shortlink_cached(short_url)
+
+# Import BeautifulSoup at top (add this line after the imports)
+from bs4 import BeautifulSoup
