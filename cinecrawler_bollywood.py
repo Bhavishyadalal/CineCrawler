@@ -1,5 +1,5 @@
 # cinecrawler_bollywood.py
-# HTTP scraper for Bollywood (RogMovies) – no Playwright
+# HTTP scraper for Bollywood (RogMovies) – with debug output
 
 import requests
 import re
@@ -17,13 +17,10 @@ def get_bollywood_domain():
         if resp.status_code == 200:
             match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
             if match:
-                domain = match.group(0).replace('https://', '').replace('http://', '')
-                return domain
+                return match.group(0).replace('https://', '').replace('http://', '')
     except Exception:
         pass
     return DEFAULT_BOLLYWOOD_DOMAIN
-
-BOLLYWOOD_DOMAIN = get_bollywood_domain()
 
 # ---------- Session ----------
 session = requests.Session()
@@ -33,7 +30,13 @@ session.headers.update({
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
     'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1'
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0',
+    'Referer': 'https://www.google.com/'
 })
 
 # ---------- Cache ----------
@@ -48,7 +51,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search (Robust) ----------
+# ---------- 1. Search (with debug) ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -62,45 +65,53 @@ def search_movies(query):
         soup = BeautifulSoup(resp.text, 'lxml')
         results = []
 
-        # Method 1: Look for <a> with href containing "/download-"
+        # ---- Look for all links with href containing "/download-" ----
         for a in soup.find_all('a', href=True):
             href = a['href']
-            text = a.get_text(strip=True)
-            # Skip empty or irrelevant links
-            if not text or len(text) < 2:
+            if '/download-' not in href:
                 continue
-            if 'search.html' in href or '#' in href:
-                continue
-            # Check if href contains "/download-" OR text contains query words
-            if '/download-' in href or any(word in text.lower() for word in query.lower().split()):
-                # Clean title
-                title = re.sub(r'\s+', ' ', text)
-                # Build full URL
-                if href.startswith('http'):
-                    full_url = href
-                else:
-                    full_url = urljoin(f"https://{domain}", href)
+            # Extract title
+            title = a.get_text(strip=True)
+            if not title or len(title) < 3:
+                parent = a.find_parent()
+                if parent:
+                    title = parent.get_text(strip=True)
+                if not title or len(title) < 3:
+                    # Try to find a heading before
+                    heading = a.find_previous(['h1', 'h2', 'h3', 'h4'])
+                    if heading:
+                        title = heading.get_text(strip=True)
+            if title:
+                title = re.sub(r'\s+', ' ', title)
+                full_url = href if href.startswith('http') else urljoin(f"https://{domain}", href)
                 results.append({
                     'title': title,
                     'detailUrl': full_url
                 })
 
-        # Method 2: If no results, look for containers like .movie-card, .result-item
+        # ---- If no results, try a more generic approach: any link with text containing query ----
         if not results:
-            for card in soup.select('.movie-card, .result-item, .post-item, .grid-item'):
-                # Get the first link inside that might be the movie link
-                link = card.find('a', href=True)
-                if link:
-                    href = link['href']
-                    if '/download-' not in href:
-                        continue
-                    text = card.get_text(strip=True)
-                    title = re.sub(r'\s+', ' ', text)
-                    full_url = href if href.startswith('http') else urljoin(f"https://{domain}", href)
-                    results.append({
-                        'title': title,
-                        'detailUrl': full_url
-                    })
+            for a in soup.find_all('a', href=True):
+                text = a.get_text(strip=True)
+                if text and any(word.lower() in text.lower() for word in query.split()):
+                    href = a['href']
+                    if '/download-' in href:
+                        title = text
+                        full_url = href if href.startswith('http') else urljoin(f"https://{domain}", href)
+                        results.append({
+                            'title': title,
+                            'detailUrl': full_url
+                        })
+
+        # ---- If still no results, return debug info ----
+        if not results:
+            # Get first 500 chars of HTML for debugging
+            html_preview = resp.text[:500]
+            return {
+                'error': 'No results found',
+                'html_preview': html_preview,
+                'search_url': search_url
+            }
 
         # Deduplicate by URL
         seen = set()
@@ -115,7 +126,7 @@ def search_movies(query):
     except Exception as e:
         return {'error': str(e)}
 
-# ---------- 2. Download options ----------
+# ---------- 2. Download options (unchanged) ----------
 def get_download_options(detail_url, mode=None):
     cache_key = f"bollywood_options_{detail_url}"
     cached = get_cache(cache_key)
@@ -172,7 +183,7 @@ def get_download_options(detail_url, mode=None):
     except Exception as e:
         return {'error': str(e)}
 
-# ---------- 3. Resolve shortlink ----------
+# ---------- 3. Resolve shortlink (unchanged) ----------
 @lru_cache(maxsize=50)
 def resolve_shortlink_cached(short_url):
     return resolve_shortlink(short_url)
