@@ -1,37 +1,54 @@
 # cinecrawler_bollywood.py
-# HTTP scraper for Bollywood (RogMovies) – using cloudscraper to bypass Cloudflare
+# HTTP scraper with fallback domains (no Cloudflare)
 
+import requests
 import re
-import time
+from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin
 from functools import lru_cache
-import cloudscraper
+import time
 
-# ---------- Domain resolver ----------
-DEFAULT_BOLLYWOOD_DOMAIN = "rogmovies.rest"
+# ---------- Fallback domains ----------
+ROGMOVIES_DOMAINS = [
+    "rogmovies.rest",
+    "rogmovies.one",
+    "rogmovies.work",
+    "rogmovies.life",
+    "rogmovies.lol",
+    "rogmovies.gay",
+    "rogmovies.how",
+    "rogmovies.net",
+    "rogmovies.site"
+]
 
-def get_bollywood_domain():
-    try:
-        # Use cloudscraper for domain fetch as well
-        scraper = cloudscraper.create_scraper()
-        resp = scraper.get("https://vglist.top/", timeout=10)
-        if resp.status_code == 200:
-            match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
-            if match:
-                return match.group(0).replace('https://', '').replace('http://', '')
-    except Exception:
-        pass
-    return DEFAULT_BOLLYWOOD_DOMAIN
+def find_working_domain():
+    """Try each domain until one responds with a 200 (not Cloudflare)."""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    })
+    for domain in ROGMOVIES_DOMAINS:
+        try:
+            resp = session.get(f"https://{domain}/", timeout=5)
+            if resp.status_code == 200 and '<title>' in resp.text:
+                print(f"✅ Found working domain: {domain}")
+                return domain
+        except:
+            continue
+    return ROGMOVIES_DOMAINS[0]  # fallback
 
-# ---------- Session with cloudscraper ----------
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'mobile': False
-    }
-)
-scraper.headers.update({
+# ---------- Get working domain ----------
+WORKING_DOMAIN = find_working_domain()
+print(f"🌐 Using domain: {WORKING_DOMAIN}")
+
+# ---------- Session ----------
+session = requests.Session()
+session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
@@ -59,11 +76,11 @@ def search_movies(query):
     if cached:
         return cached
     try:
-        domain = get_bollywood_domain()
+        domain = WORKING_DOMAIN
         search_url = f"https://{domain}/search.html?q={quote(query)}"
-        resp = scraper.get(search_url, timeout=15)
+        resp = session.get(search_url, timeout=15)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, 'lxml')  # using BeautifulSoup now (import needed)
+        soup = BeautifulSoup(resp.text, 'lxml')
         results = []
 
         for a in soup.find_all('a', href=True):
@@ -114,16 +131,15 @@ def search_movies(query):
 
 # ---------- 2. Download options ----------
 def get_download_options(detail_url, mode=None):
-    # mode is ignored for Bollywood
     cache_key = f"bollywood_options_{detail_url}"
     cached = get_cache(cache_key)
     if cached:
         return cached
     try:
         if not detail_url.startswith('http'):
-            domain = get_bollywood_domain()
+            domain = WORKING_DOMAIN
             detail_url = f"https://{domain}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
-        resp = scraper.get(detail_url, timeout=15)
+        resp = session.get(detail_url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
         options = []
@@ -177,7 +193,7 @@ def resolve_shortlink_cached(short_url):
 
 def resolve_shortlink(short_url):
     try:
-        resp = scraper.get(short_url, timeout=10)
+        resp = session.get(short_url, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
         vcloud_a = soup.select_one('a[href*="vcloud.zip"]')
@@ -191,7 +207,7 @@ def resolve_shortlink(short_url):
         vcloud_url = vcloud_a['href']
         if not vcloud_url.startswith('http'):
             vcloud_url = urljoin(short_url, vcloud_url)
-        resp2 = scraper.get(vcloud_url, timeout=10)
+        resp2 = session.get(vcloud_url, timeout=10)
         resp2.raise_for_status()
         soup2 = BeautifulSoup(resp2.text, 'lxml')
         generate_btn = soup2.select_one('a#download, .btn-download, .generate-btn')
@@ -200,7 +216,7 @@ def resolve_shortlink(short_url):
             if generate_url:
                 if not generate_url.startswith('http'):
                     generate_url = urljoin(vcloud_url, generate_url)
-                resp3 = scraper.get(generate_url, timeout=10)
+                resp3 = session.get(generate_url, timeout=10)
                 resp3.raise_for_status()
                 final_html = resp3.text
             else:
@@ -212,7 +228,7 @@ def resolve_shortlink(short_url):
                     if gen_url:
                         if not gen_url.startswith('http'):
                             gen_url = urljoin(vcloud_url, gen_url)
-                        resp3 = scraper.get(gen_url, timeout=10)
+                        resp3 = session.get(gen_url, timeout=10)
                         resp3.raise_for_status()
                         final_html = resp3.text
                         break
@@ -258,6 +274,3 @@ def extract_final_links(html):
 
 def resolve_wrapper(short_url):
     return resolve_shortlink_cached(short_url)
-
-# Import BeautifulSoup at top (add this line after the imports)
-from bs4 import BeautifulSoup
