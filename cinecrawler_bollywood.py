@@ -1,5 +1,5 @@
 # cinecrawler_bollywood.py
-# Uses curl_cffi to impersonate Chrome and bypass Cloudflare
+# Improved search – broader link detection + debug output
 
 import re
 import time
@@ -13,7 +13,7 @@ try:
 except ImportError:
     import requests
     USE_CURL_CFFI = False
-    print("⚠️ curl_cffi not installed, falling back to standard requests (may fail)")
+    print("⚠️ curl_cffi not installed, falling back to standard requests")
 
 ROGMOVIES_DOMAINS = [
     "rogmovies.rest", "rogmovies.one", "rogmovies.work",
@@ -48,9 +48,7 @@ def extract_redirect_from_js(html):
     return None
 
 def get_session():
-    """Return a session that mimics a real Chrome browser."""
     if USE_CURL_CFFI:
-        # Use curl_cffi with Chrome impersonation
         session = requests.Session(impersonate="chrome120")
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -137,7 +135,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search ----------
+# ---------- 1. Search – Improved ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -168,11 +166,27 @@ def search_movies(query):
 
         soup = BeautifulSoup(html, 'lxml')
         results = []
+
+        # Broaden link detection: look for /download-, /download/, /movie-, or any link containing query words
+        query_words = query.lower().split()
         for a in soup.find_all('a', href=True):
             href = a['href']
-            if '/download-' not in href:
+            text = a.get_text(strip=True)
+            # Skip if href is empty or is a search link
+            if not href or 'search.html' in href:
                 continue
-            title = a.get_text(strip=True)
+            # Check if this is a movie link
+            is_movie_link = (
+                '/download-' in href or
+                '/download/' in href or
+                '/movie-' in href or
+                '/film-' in href or
+                any(word in text.lower() for word in query_words)
+            )
+            if not is_movie_link:
+                continue
+
+            title = text
             if not title or len(title) < 3:
                 parent = a.find_parent()
                 if parent:
@@ -186,17 +200,25 @@ def search_movies(query):
                 full_url = href if href.startswith('http') else urljoin(f"https://{domain}", href)
                 results.append({'title': title, 'detailUrl': full_url})
 
+        # If still no results, return debug info including HTML preview
         if not results:
-            result = {'error': 'No movie links found', 'domain': domain}
+            result = {
+                'error': 'No movie links found',
+                'domain': domain,
+                'search_url': search_url,
+                'html_preview': html[:800]  # first 800 chars
+            }
             set_cache(cache_key, result)
             return result
 
+        # Deduplicate
         seen = set()
         unique = []
         for r in results:
             if r['detailUrl'] not in seen:
                 seen.add(r['detailUrl'])
                 unique.append(r)
+
         set_cache(cache_key, unique)
         return unique
     except Exception as e:
