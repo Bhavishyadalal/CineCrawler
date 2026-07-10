@@ -1,5 +1,5 @@
 # cinecrawler_bollywood.py
-# Full scraper using FlareSolverr to bypass Cloudflare
+# Full scraper using FlareSolverr (with correct URL)
 
 import re
 import time
@@ -9,8 +9,8 @@ from urllib.parse import quote, urljoin, urlparse
 from functools import lru_cache
 
 # ---------- FlareSolverr Configuration ----------
-# Replace this with your actual FlareSolverr URL after deployment
-FLARESOLVERR_URL = "https://flaresolverr.onrender.com/v1"  # <-- UPDATE THIS
+# UPDATED with your actual Render URL
+FLARESOLVERR_URL = "https://flaresolverr-vgm9.onrender.com/v1"
 
 # ---------- Domain resolver ----------
 ROGMOVIES_DOMAINS = [
@@ -227,7 +227,6 @@ def get_download_options(detail_url, mode=None):
                 quality = 'Unknown'
             options.append({'quality': quality, 'url': a['href']})
 
-        # Deduplicate by quality
         seen_quality = set()
         unique = []
         for opt in options:
