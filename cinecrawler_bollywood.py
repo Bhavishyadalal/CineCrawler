@@ -6,6 +6,7 @@ import re
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin, urlparse
+from functools import lru_cache  # <-- ADD THIS IMPORT
 
 # ---------- List of all known RogMovies domains ----------
 ROGMOVIES_DOMAINS = [
@@ -41,7 +42,6 @@ def is_valid_html(content):
 # ---------- Helper: extract redirect URL from JavaScript ----------
 def extract_redirect_from_js(html):
     """Extract redirect URL from JavaScript redirect code."""
-    # Look for window.location or location.href
     patterns = [
         r'window\.location\s*=\s*["\']([^"\']+)["\']',
         r'location\.href\s*=\s*["\']([^"\']+)["\']',
@@ -70,13 +70,10 @@ def find_working_domain():
             url = f"https://{domain}/"
             resp = session.get(url, timeout=10, allow_redirects=True)
             if resp.status_code == 200 and is_valid_html(resp.text):
-                # Check if it's a redirect page
                 if 'Redirecting' in resp.text or 'redirect' in resp.text.lower():
-                    # Try to extract the real URL
                     real_url = extract_redirect_from_js(resp.text)
                     if real_url:
                         print(f"✅ {domain} redirects to: {real_url}")
-                        # Extract domain from the real URL
                         parsed = urlparse(real_url)
                         if parsed.netloc:
                             return parsed.netloc
@@ -170,7 +167,6 @@ def search_movies(query):
         if 'Redirecting' in html or '<title>Redirecting...</title>' in html:
             real_url = extract_redirect_from_js(html)
             if real_url:
-                # Follow the redirect manually
                 parsed = urlparse(real_url)
                 if parsed.netloc:
                     domain = parsed.netloc
