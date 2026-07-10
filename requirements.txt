@@ -4,4 +4,4 @@ requests
 beautifulsoup4
 lxml
 gunicorn
-curl_cffi
+cloudscraper
