@@ -1,8 +1,8 @@
 [
   { 
-    "key": "CINE-TRIAL-20H", 
+    "key": "CINE-TRIAL-23H", 
     "active": true,
-    "durationHours": 20
+    "durationHours": 23
   },
   { 
     "key": "CINE-TRIAL-10H", 
