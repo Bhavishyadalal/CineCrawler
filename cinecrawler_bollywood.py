@@ -12,7 +12,6 @@ import time
 DEFAULT_BOLLYWOOD_DOMAIN = "rogmovies.rest"
 
 def get_bollywood_domain():
-    """Fetch current RogMovies domain from vglist.top or fallback."""
     try:
         resp = requests.get("https://vglist.top/", timeout=10)
         if resp.status_code == 200:
@@ -29,7 +28,12 @@ BOLLYWOOD_DOMAIN = get_bollywood_domain()
 # ---------- Session ----------
 session = requests.Session()
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
 })
 
 # ---------- Cache ----------
@@ -44,7 +48,7 @@ def get_cache(key):
 def set_cache(key, data):
     cache[key] = {'data': data, 'time': time.time()}
 
-# ---------- 1. Search (FIXED) ----------
+# ---------- 1. Search (Robust) ----------
 def search_movies(query):
     cache_key = f"bollywood_search_{query}"
     cached = get_cache(cache_key)
@@ -52,47 +56,51 @@ def search_movies(query):
         return cached
     try:
         domain = get_bollywood_domain()
-        url = f"https://{domain}/search.html?q={quote(query)}"
-        resp = session.get(url, timeout=15)
+        search_url = f"https://{domain}/search.html?q={quote(query)}"
+        resp = session.get(search_url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'lxml')
         results = []
 
-        # Method 1: Find all <a> with href containing "/download-"
-        for a in soup.find_all('a', href=re.compile(r'/download-')):
-            href = a.get('href')
-            # Get title from the anchor text or from the parent
-            title = a.get_text(strip=True)
-            if not title or len(title) < 3:
-                # Try the parent element
-                parent = a.parent
-                if parent:
-                    title = parent.get_text(strip=True)
-                # If still empty, try the nearest heading
-                if not title or len(title) < 3:
-                    heading = a.find_previous(['h1', 'h2', 'h3', 'h4'])
-                    if heading:
-                        title = heading.get_text(strip=True)
-            if title and href:
+        # Method 1: Look for <a> with href containing "/download-"
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            text = a.get_text(strip=True)
+            # Skip empty or irrelevant links
+            if not text or len(text) < 2:
+                continue
+            if 'search.html' in href or '#' in href:
+                continue
+            # Check if href contains "/download-" OR text contains query words
+            if '/download-' in href or any(word in text.lower() for word in query.lower().split()):
+                # Clean title
+                title = re.sub(r'\s+', ' ', text)
+                # Build full URL
+                if href.startswith('http'):
+                    full_url = href
+                else:
+                    full_url = urljoin(f"https://{domain}", href)
                 results.append({
-                    'title': re.sub(r'\s+', ' ', title),
-                    'detailUrl': href
+                    'title': title,
+                    'detailUrl': full_url
                 })
 
-        # Method 2: If no results, look for div.movie-card or .result-item
+        # Method 2: If no results, look for containers like .movie-card, .result-item
         if not results:
             for card in soup.select('.movie-card, .result-item, .post-item, .grid-item'):
-                # Try to find a link inside
-                link = card.find('a', href=re.compile(r'/download-'))
+                # Get the first link inside that might be the movie link
+                link = card.find('a', href=True)
                 if link:
-                    href = link.get('href')
-                    # Extract title from card text
-                    title = card.get_text(strip=True)
-                    if title:
-                        results.append({
-                            'title': re.sub(r'\s+', ' ', title),
-                            'detailUrl': href
-                        })
+                    href = link['href']
+                    if '/download-' not in href:
+                        continue
+                    text = card.get_text(strip=True)
+                    title = re.sub(r'\s+', ' ', text)
+                    full_url = href if href.startswith('http') else urljoin(f"https://{domain}", href)
+                    results.append({
+                        'title': title,
+                        'detailUrl': full_url
+                    })
 
         # Deduplicate by URL
         seen = set()
@@ -164,7 +172,7 @@ def get_download_options(detail_url, mode=None):
     except Exception as e:
         return {'error': str(e)}
 
-# ---------- 3. Resolve shortlink (nexdrive -> vcloud -> final) ----------
+# ---------- 3. Resolve shortlink ----------
 @lru_cache(maxsize=50)
 def resolve_shortlink_cached(short_url):
     return resolve_shortlink(short_url)
