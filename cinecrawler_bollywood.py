@@ -1,12 +1,19 @@
 # cinecrawler_bollywood.py
-# Full scraper with error handling – no 500 errors
+# Uses curl_cffi to impersonate Chrome and bypass Cloudflare
 
-import requests
 import re
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin, urlparse
 from functools import lru_cache
+
+try:
+    from curl_cffi import requests
+    USE_CURL_CFFI = True
+except ImportError:
+    import requests
+    USE_CURL_CFFI = False
+    print("⚠️ curl_cffi not installed, falling back to standard requests (may fail)")
 
 ROGMOVIES_DOMAINS = [
     "rogmovies.rest", "rogmovies.one", "rogmovies.work",
@@ -40,16 +47,34 @@ def extract_redirect_from_js(html):
             return m.group(1)
     return None
 
+def get_session():
+    """Return a session that mimics a real Chrome browser."""
+    if USE_CURL_CFFI:
+        # Use curl_cffi with Chrome impersonation
+        session = requests.Session(impersonate="chrome120")
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        })
+        return session
+    else:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        })
+        return session
+
 def find_working_domain():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-    })
+    session = get_session()
     for domain in ROGMOVIES_DOMAINS:
         try:
             url = f"https://{domain}/"
@@ -74,12 +99,13 @@ def get_working_domain():
     if WORKING_DOMAIN:
         return WORKING_DOMAIN
     try:
-        resp = requests.get("https://vglist.nl/", timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+        session = get_session()
+        resp = session.get("https://vglist.nl/", timeout=10)
         if resp.status_code == 200:
             match = re.search(r'https?://rogmovies\.[a-z]+', resp.text)
             if match:
                 domain = match.group(0).replace('https://', '').replace('http://', '')
-                test_resp = requests.get(f"https://{domain}/", timeout=10, allow_redirects=True)
+                test_resp = session.get(f"https://{domain}/", timeout=10, allow_redirects=True)
                 if test_resp.status_code == 200 and is_valid_html(test_resp.text):
                     if 'Redirecting' in test_resp.text:
                         real_url = extract_redirect_from_js(test_resp.text)
@@ -99,18 +125,6 @@ def get_working_domain():
         return domain
     WORKING_DOMAIN = "rogmovies.rest"
     return WORKING_DOMAIN
-
-def get_session():
-    s = requests.Session()
-    s.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-    })
-    return s
 
 cache = {}
 CACHE_TTL = 3600
