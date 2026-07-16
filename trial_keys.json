@@ -24,4 +24,9 @@
     "active": true,
     "durationHours": 72 
   }
+  { 
+    "key": "CINE-TRIAL-99H", 
+    "active": true,
+    "durationHours": 99
+  }
 ]
