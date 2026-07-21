@@ -10,9 +10,9 @@
     "durationHours": 10 
   },
   { 
-    "key": "CINE-TRIAL-48H", 
+    "key": "CINE-TRIAL-70H", 
     "active": true,
-    "durationHours": 48 
+    "durationHours": 70 
   },
   { 
     "key": "CINE-TRIAL-15H", 
