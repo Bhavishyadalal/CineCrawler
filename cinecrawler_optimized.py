@@ -32,11 +32,11 @@ def _set_cache(key, data):
     _cache[key] = {'d': data, 't': time.time()}
 
 
-# ---------- Global Playwright browser (launched once at startup) ----------
+# ---------- Global Playwright browser (launched once) ----------
 _pw = None
 _browser = None
 _browser_lock = threading.Lock()
-_playwright_lock = threading.Lock()  # serialize all Playwright calls
+_playwright_lock = threading.Lock()
 
 def _get_browser():
     global _pw, _browser
@@ -56,7 +56,6 @@ def _get_browser():
                     '--disable-gpu',
                     '--disable-software-rasterizer',
                     '--disable-background-networking',
-                    '--disable-features=site-per-process',
                     '--single-process',
                 ]
             )
@@ -92,7 +91,6 @@ def search_movies(query):
                 'detailUrl': href,
                 'poster': poster,
             })
-        # Deduplicate
         seen, unique = set(), []
         for r in results:
             if r['detailUrl'] not in seen:
@@ -101,7 +99,8 @@ def search_movies(query):
         _set_cache(key, unique)
         return unique
     except Exception as e:
-        return {'error': str(e)}
+        print(f"[search_movies] error: {e}")
+        return []          # <-- ALWAYS an array
 
 
 # ---------- 2. Download options ----------
@@ -121,7 +120,6 @@ def get_download_options(detail_url, mode=None):
 
         if is_series:
             if mode == 'episodes':
-                # Individual episodes
                 for ep_item in soup.select('.season-item.episode-item'):
                     header = ep_item.select_one('.episode-header')
                     if not header:
@@ -130,7 +128,6 @@ def get_download_options(detail_url, mode=None):
                     ep_num = ep_num_el.get_text(strip=True) if ep_num_el else ''
                     ep_title_el = header.select_one('.episode-title')
                     ep_title = ' '.join(ep_title_el.get_text(strip=True).split()) if ep_title_el else ''
-                    # Season info for context
                     season_el = ep_item.select_one('.season-number, .episode-season')
                     season = season_el.get_text(strip=True) if season_el else ''
 
@@ -155,7 +152,6 @@ def get_download_options(detail_url, mode=None):
                                 label += f" [{size}]"
                             options.append({'quality': label, 'url': link_el['href']})
             else:
-                # Complete season packs (default mode)
                 for item in soup.select('.download-item'):
                     header = item.select_one('.download-header')
                     if not header:
@@ -191,7 +187,6 @@ def get_download_options(detail_url, mode=None):
                             label += ")"
                         options.append({'quality': label, 'url': link_el['href']})
         else:
-            # Movie
             for header in soup.select('.download-header[data-file-id]'):
                 file_id = header.get('data-file-id', '')
                 title_el = header.select_one('.download-title-text')
@@ -220,7 +215,8 @@ def get_download_options(detail_url, mode=None):
         _set_cache(key, options)
         return options
     except Exception as e:
-        return {'error': str(e)}
+        print(f"[get_download_options] error: {e}")
+        return []          # <-- ALWAYS an array
 
 
 # ---------- 3. Resolve chain using Playwright ----------
@@ -232,7 +228,6 @@ def _resolve_with_playwright(short_url):
     )
 
     try:
-        # Step 1: Load greenmotors entry
         page = context.new_page()
         try:
             page.goto(short_url, wait_until='commit', timeout=60000)
@@ -240,7 +235,6 @@ def _resolve_with_playwright(short_url):
             pass
         page.wait_for_timeout(5000)
 
-        # Step 2: Wait for #verify_btn to appear
         for _ in range(10):
             if page.locator('#verify_btn').count() > 0:
                 break
@@ -252,7 +246,6 @@ def _resolve_with_playwright(short_url):
             except PWTimeout:
                 return []
 
-        # Step 3: Click CLICK TO CONTINUE if needed
         btn_state = page.evaluate("""() => {
             const btn = document.getElementById('verify_btn');
             if (!btn) return null;
@@ -270,7 +263,6 @@ def _resolve_with_playwright(short_url):
             except Exception:
                 pass
             page.wait_for_timeout(2000)
-            # Close stray popups
             for p in context.pages:
                 if p is not page:
                     try:
@@ -278,7 +270,6 @@ def _resolve_with_playwright(short_url):
                     except Exception:
                         pass
 
-        # Step 4: Poll for timer to finish
         max_wait = 90
         start = time.time()
         activated = False
@@ -306,7 +297,6 @@ def _resolve_with_playwright(short_url):
                 activated = True
                 break
 
-            # Re-click if still stuck on CLICK TO CONTINUE
             if (state.get('text', '').upper().startswith('CLICK TO CONTINUE')
                     and int(elapsed) > 0 and int(elapsed) % 5 == 0):
                 try:
@@ -323,7 +313,6 @@ def _resolve_with_playwright(short_url):
         if not hubcloud_url or 'javascript' in hubcloud_url:
             return []
 
-        # Step 5: Load hubcloud drive
         hc_page = context.new_page()
         try:
             hc_page.goto(hubcloud_url, wait_until='commit', timeout=30000)
@@ -331,7 +320,6 @@ def _resolve_with_playwright(short_url):
             pass
         hc_page.wait_for_timeout(5000)
 
-        # Step 6: Poll for gamerxyt link
         gamerxyt_url = None
         start = time.time()
         while time.time() - start < 30:
@@ -346,7 +334,6 @@ def _resolve_with_playwright(short_url):
         if not gamerxyt_url or 'gamerxyt' not in gamerxyt_url:
             return []
 
-        # Step 7: Load gamerxyt final page
         gx_page = context.new_page()
         try:
             gx_page.goto(gamerxyt_url, wait_until='commit', timeout=30000)
@@ -354,7 +341,6 @@ def _resolve_with_playwright(short_url):
             pass
         gx_page.wait_for_timeout(5000)
 
-        # Step 8: Extract final links
         final_links = gx_page.evaluate("""() => {
             const results = [];
             document.querySelectorAll('a[href]').forEach(a => {
@@ -375,7 +361,6 @@ def _resolve_with_playwright(short_url):
             return results;
         }""")
 
-        # Deduplicate
         seen, unique = set(), []
         for link in final_links:
             if link['url'] not in seen:
@@ -391,14 +376,12 @@ def _resolve_with_playwright(short_url):
 
 
 def resolve_wrapper(short_url):
-    """Sync wrapper for Flask. Uses a lock because Playwright sync API is not thread-safe."""
     key = f"resolve_{short_url}"
     cached = _get_cache(key)
     if cached is not None:
         return cached
 
     with _playwright_lock:
-        # Double-check after acquiring lock
         cached = _get_cache(key)
         if cached is not None:
             return cached
@@ -407,4 +390,5 @@ def resolve_wrapper(short_url):
             _set_cache(key, result)
             return result
         except Exception as e:
-            return {'error': str(e)}
+            print(f"[resolve_wrapper] error: {e}")
+            return []          # <-- ALWAYS an array
