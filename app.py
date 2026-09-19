@@ -22,45 +22,45 @@ def health():
 
 @app.route('/search', methods=['POST'])
 def search():
+    """Always returns a JSON array."""
     data = request.get_json(silent=True) or {}
     query = data.get('query')
     if not query:
-        return jsonify({'error': 'Missing query'}), 400
+        return jsonify([]), 200          # <-- array, not error object
     try:
-        results = crawler.search_movies(query)
-        return jsonify(results)
+        return jsonify(crawler.search_movies(query))
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify([]), 200          # <-- array, not 500
 
 
 @app.route('/downloads', methods=['POST'])
 def downloads():
+    """Always returns a JSON array."""
     data = request.get_json(silent=True) or {}
     url = data.get('url')
-    mode = data.get('mode')  # 'complete' or 'episodes'
+    mode = data.get('mode')
     if not url:
-        return jsonify({'error': 'Missing url'}), 400
+        return jsonify([]), 200
     try:
-        options = crawler.get_download_options(url, mode)
-        return jsonify(options)
+        return jsonify(crawler.get_download_options(url, mode))
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify([]), 200
 
 
 @app.route('/resolve', methods=['POST'])
 def resolve():
+    """Always returns a JSON array."""
     data = request.get_json(silent=True) or {}
     short_url = data.get('short_url')
     if not short_url:
-        return jsonify({'error': 'Missing short_url'}), 400
+        return jsonify([]), 200
     try:
-        final = crawler.resolve_wrapper(short_url)
-        return jsonify(final)
+        return jsonify(crawler.resolve_wrapper(short_url))
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify([]), 200
 
 
 if __name__ == '__main__':
